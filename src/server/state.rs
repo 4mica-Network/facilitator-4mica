@@ -70,7 +70,17 @@ impl AppState {
         let mut degraded = false;
 
         for relayer in &self.relayers {
-            let balance = relayer.cached_balance().await.ok();
+            let balance = match relayer.cached_balance().await {
+                Ok(balance) => Some(balance),
+                Err(err) => {
+                    tracing::warn!(
+                        network = relayer.network(),
+                        error = ?err,
+                        "failed to read relayer balance; reporting degraded"
+                    );
+                    None
+                }
+            };
             // An unreadable balance is a degraded state too: we cannot tell whether the relayer can
             // pay, and reporting "ok" would be a lie.
             let below_floor = match balance {
@@ -105,7 +115,7 @@ impl AppState {
             None => self
                 .relayers
                 .first()
-                .ok_or_else(|| DepositError::NoRelayer("<default>".into())),
+                .ok_or(DepositError::NoRelayerConfigured),
         }
     }
 
@@ -235,7 +245,6 @@ pub(crate) struct FourMicaHandler {
     network: String,
     verifier: Arc<dyn CertificateValidator>,
     issuer: Arc<dyn GuaranteeIssuer>,
-    supported_versions: Vec<u8>,
     /// Validator identities core whitelisted. A signed validation requirement naming anything else
     /// is rejected before we ask core to issue, since core would reject it anyway.
     validators: Vec<String>,
@@ -254,7 +263,6 @@ impl FourMicaHandler {
             network,
             verifier,
             issuer,
-            supported_versions: SUPPORTED_X402_VERSIONS.to_vec(),
             validators,
         }
     }
@@ -268,11 +276,11 @@ impl FourMicaHandler {
     }
 
     fn supports_version(&self, version: u8) -> bool {
-        self.supported_versions.contains(&version)
+        SUPPORTED_X402_VERSIONS.contains(&version)
     }
 
     fn supported_kinds(&self) -> Vec<SupportedKind> {
-        self.supported_versions
+        SUPPORTED_X402_VERSIONS
             .iter()
             .copied()
             .map(|version| SupportedKind {
